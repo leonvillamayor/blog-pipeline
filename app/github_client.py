@@ -203,6 +203,75 @@ class GitHubClient:
     def get_pr(self, number: int) -> dict:
         return self._req("GET", f"/repos/{self.repo}/pulls/{number}")  # type: ignore[return-value]
 
+    def list_open_prs_by_head_pattern(self, head_pattern: str) -> list[dict]:
+        """Lista PRs abiertos cuya head branch empieza con head_pattern.
+
+        head_pattern: ej. 'auto/' para los del bot. Owner-prefijado:
+        head debe ser 'owner:branch' o solo 'branch' si head_pattern
+        comienza por nombre simple.
+        """
+        prs = self._req("GET", f"/repos/{self.repo}/pulls?state=open&per_page=50")
+        return [pr for pr in prs if pr["head"]["ref"].startswith(head_pattern)]  # type: ignore[index]
+
+    def pr_check_summary(self, number: int) -> dict:
+        """Devuelve summary de checks via GraphQL (más eficiente que REST).
+
+        Returns: {"state": "success|failure|pending|error", "ok": int, "fail": int, "pending": int, "total": int}
+        """
+        query = """
+        query PRChecks($owner: String!, $repo: String!, $number: Int!) {
+          repository(owner: $owner, name: $repo) {
+            pullRequest(number: $number) {
+              autoMergeRequest { enabledAt }
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    statusCheckRollup {
+                      state
+                      contexts(first: 100) {
+                        nodes {
+                          ... on CheckRun {
+                            name
+                            status
+                            conclusion
+                          }
+                          ... on StatusContext {
+                            context
+                            state
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        owner, name = self.repo.split("/", 1)
+        d = self._gql(query, {"owner": owner, "repo": name, "number": number})
+        pr = d["repository"]["pullRequest"]
+        rollup = pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] if pr["commits"]["nodes"] else None
+        if not rollup:
+            return {"state": "PENDING", "ok": 0, "fail": 0, "pending": 0, "total": 0,
+                    "auto_merge": pr["autoMergeRequest"] is not None}
+        ok = fail = pending = 0
+        for c in rollup["contexts"]["nodes"]:
+            concl = (c.get("conclusion") or c.get("state") or "PENDING").upper()
+            if concl == "SUCCESS":
+                ok += 1
+            elif concl in ("FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"):
+                fail += 1
+            else:
+                pending += 1
+        return {
+            "state": rollup["state"],
+            "ok": ok, "fail": fail, "pending": pending,
+            "total": ok + fail + pending,
+            "auto_merge": pr["autoMergeRequest"] is not None,
+        }
+
     def enable_auto_merge(self, pr_node_id: str, merge_method: str = "MERGE") -> dict:
         """Habilita auto-merge GraphQL. merge_method ∈ {MERGE, SQUASH, REBASE}.
 

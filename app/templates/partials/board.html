@@ -1,0 +1,167 @@
+{# Cuerpo dinámico del dashboard (board + paneles). Se renderiza standalone
+   en GET /board para refrescos parciales sin recargar layout/scripts. #}
+
+{# === Search input === #}
+<div class="board-toolbar">
+  <input type="search"
+         class="filter-input"
+         placeholder="Filtrar por slug o título…"
+         oninput="filterArticles(this.value)"
+         aria-label="Filtro de artículos">
+  <span class="last-refresh">refrescado {{ p.last_refreshed_iso[11:19] }}Z</span>
+</div>
+
+<section class="board">
+  {% set columns = [
+    ("Pending dev", "pending", p.pending, "feature branches drafts/*", None),
+    ("In dev", "dev", p.in_dev, "origin/dev (drafts y publicados)", "blog-dev"),
+    ("In preprod", "preprod", p.in_preprod, "origin/preprod", "blog-preprod"),
+    ("In prod", "prod", p.in_prod, "origin/main", "blog-prod"),
+  ] %}
+  {% for name, css, items, sub, project in columns %}
+    <div class="col col-{{ css }}">
+      <header>
+        <h2>{{ name }}</h2>
+        <small>{{ sub }} — {{ items|length }} ítem(s)</small>
+        {% if project and p.builds.get(project) %}
+          {% set b = p.builds[project] %}
+          <div class="build-status build-{{ b.status }}" title="Last deploy: {{ b.created_on }}">
+            <span class="build-stage">{{ b.stage }}</span>
+            <span class="build-state">{{ b.status }}</span>
+            <span class="build-sha">{{ b.commit_sha }}</span>
+          </div>
+        {% endif %}
+      </header>
+      {% if items %}
+        <ul>
+          {% for art in items %}
+            <li class="article {% if art.is_draft %}is-draft{% endif %}"
+                data-slug="{{ art.slug }}"
+                data-title="{{ art.title|e }}"
+                id="art-{{ css }}-{{ art.slug }}">
+              <div class="slug">{{ art.slug }}</div>
+              <div class="title">{{ art.title }}</div>
+              <div class="badges">
+                {% if art.is_draft %}<span class="badge draft">draft</span>{% endif %}
+                {% if art.pending_branch %}<span class="badge branch">{{ art.pending_branch }}</span>{% endif %}
+                {% if pr_for_slug.get(art.slug) %}
+                  {% set pr = pr_for_slug[art.slug] %}
+                  <a class="badge pr pr-{{ pr.check_state }}" href="{{ pr.url }}" target="_blank" rel="noopener">
+                    PR #{{ pr.number }} · {{ pr.check_summary }}
+                  </a>
+                {% endif %}
+              </div>
+              <div class="actions">
+                {% if css == "pending" %}
+                  <button class="btn btn-deploy"
+                          hx-post="/api/deploy/{{ art.slug }}/dev"
+                          hx-target="#result-{{ css }}-{{ art.slug }}"
+                          hx-swap="innerHTML"
+                          hx-confirm="Desplegar '{{ art.slug }}' a dev?">
+                    ▶ Deploy → dev
+                  </button>
+                {% elif css == "dev" %}
+                  <button class="btn btn-deploy"
+                          hx-post="/api/deploy/{{ art.slug }}/preprod"
+                          hx-target="#result-{{ css }}-{{ art.slug }}"
+                          hx-swap="innerHTML"
+                          hx-confirm="Promover '{{ art.slug }}' a preprod?">
+                    ▶ Deploy → preprod
+                  </button>
+                {% elif css == "preprod" %}
+                  <button class="btn btn-deploy"
+                          hx-post="/api/deploy/{{ art.slug }}/prod"
+                          hx-target="#result-{{ css }}-{{ art.slug }}"
+                          hx-swap="innerHTML"
+                          hx-confirm="Promover '{{ art.slug }}' a producción?">
+                    ▶ Deploy → prod
+                  </button>
+                {% endif %}
+                {% set lvl_path = "main" if css == "prod" else (css if css != "pending" else "pending") %}
+                <button class="btn btn-delete"
+                        hx-post="/api/delete/{{ art.slug }}/{{ lvl_path }}"
+                        hx-target="#result-{{ css }}-{{ art.slug }}"
+                        hx-swap="innerHTML"
+                        hx-confirm="¿Borrar '{{ art.slug }}' de {{ name }}? Crea un PR de borrado.">
+                  ✗ Delete
+                </button>
+              </div>
+              <div class="result" id="result-{{ css }}-{{ art.slug }}"></div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="empty">vacío</p>
+      {% endif %}
+    </div>
+  {% endfor %}
+</section>
+
+{# === Panel: PRs abiertos del bot === #}
+{% if gui_prs %}
+  <section class="prs-panel">
+    <h2>PRs en vuelo (creados por la GUI)</h2>
+    <ul class="pr-list">
+      {% for pr in gui_prs %}
+        <li class="pr-item state-{{ pr.check_state }}">
+          <div class="pr-num">
+            <a href="{{ pr.url }}" target="_blank" rel="noopener">#{{ pr.number }}</a>
+          </div>
+          <div class="pr-title">{{ pr.title }}</div>
+          <div class="pr-meta">
+            <span class="pr-branch">{{ pr.head }} → {{ pr.base }}</span>
+            <span class="pr-checks pr-{{ pr.check_state }}">{{ pr.check_summary }}</span>
+            {% if pr.auto_merge %}<span class="badge auto-merge">auto-merge</span>{% endif %}
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+
+{# === Panel infra changes === #}
+<section class="infra-panel">
+  <h2>Infra changes (branch-level)</h2>
+  <p class="hint">
+    Commits no-artículo (layouts, schema, hugo.toml, doc, tools…) pendientes de promover.
+    Estos van por los workflows existentes <code>promote-to-preprod.yml</code> y <code>promote-to-prod.yml</code>; la GUI no interviene aquí, solo informa.
+  </p>
+  {% set diffs = [("dev → preprod", p.infra_diff_dev_preprod), ("preprod → main", p.infra_diff_preprod_main)] %}
+  <div class="infra-grid">
+    {% for label, diff in diffs %}
+      <div class="infra-col">
+        <h3>{{ label }}</h3>
+        {% if diff and diff.commits %}
+          <ul>
+            {% for c in diff.commits[:10] %}
+              <li class="commit kind-{{ c.kind }}">
+                <span class="sha">{{ c.sha }}</span>
+                <span class="kind-tag">{{ c.kind }}</span>
+                <span class="subject">{{ c.subject }}</span>
+                <span class="files">{{ c.files|length }} fichero(s)</span>
+              </li>
+            {% endfor %}
+          </ul>
+          {% if diff.commits|length > 10 %}
+            <p class="more">+{{ diff.commits|length - 10 }} commits más</p>
+          {% endif %}
+        {% else %}
+          <p class="empty">sin commits pendientes</p>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+</section>
+
+{# === Panel audit log === #}
+<section class="audit-panel">
+  <h2>Audit log
+    <button class="btn-refresh"
+            hx-get="/api/audit"
+            hx-target="#audit-content"
+            hx-swap="innerHTML">refresh</button>
+  </h2>
+  <div id="audit-content">
+    {% include "partials/audit_log.html" %}
+  </div>
+</section>

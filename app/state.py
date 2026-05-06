@@ -37,6 +37,20 @@ class Article:
 
 
 @dataclass
+class GuiPR:
+    """PR abierto creado por la GUI (head matchea auto/promote-* o auto/delete-*)."""
+    number: int
+    title: str
+    head: str
+    base: str
+    url: str
+    slug: str | None  # extraído del nombre de la branch
+    check_state: str  # success | failure | pending | error
+    check_summary: str  # "8/8 ✓" o "3/8 (1 fail)" etc.
+    auto_merge: bool
+
+
+@dataclass
 class InfraDiff:
     """Commits no-artículo (infra) entre dos branches: tipo + slugs/paths involucrados."""
     from_branch: str
@@ -50,9 +64,10 @@ class PipelineState:
     in_dev: list[Article] = field(default_factory=list)
     in_preprod: list[Article] = field(default_factory=list)
     in_prod: list[Article] = field(default_factory=list)
-    builds: dict[str, DeploymentStatus | None] = field(default_factory=dict)  # project → status
+    builds: dict[str, DeploymentStatus | None] = field(default_factory=dict)
     infra_diff_dev_preprod: InfraDiff | None = None
     infra_diff_preprod_main: InfraDiff | None = None
+    gui_prs: list[GuiPR] = field(default_factory=list)
     last_refreshed_iso: str = ""
 
 
@@ -207,6 +222,49 @@ def build_state(settings: Settings) -> PipelineState:
         commits=_infra_commits("preprod", "main"),
     )
 
+    # PRs abiertos creados por la GUI (head=auto/*)
+    gui_prs: list[GuiPR] = []
+    if settings.github_token:
+        from .github_client import GitHubClient as GHC, GitHubError as GHE
+        gh = GHC(token=settings.github_token, repo=settings.blog_repo)
+        try:
+            raw_prs = gh.list_open_prs_by_head_pattern("auto/")
+            import re as _re
+            slug_re = _re.compile(r"^auto/(promote|delete)-(?P<slug>.+?)-(?:to|from)-")
+            for pr in raw_prs:
+                head = pr["head"]["ref"]
+                m = slug_re.match(head)
+                slug = m.group("slug") if m else None
+                try:
+                    chk = gh.pr_check_summary(pr["number"])
+                    state_str = chk["state"].lower()
+                    if chk["fail"] > 0:
+                        summary = f"{chk['ok']}/{chk['total']} ({chk['fail']} fail)"
+                    elif chk["pending"] > 0:
+                        summary = f"{chk['ok']}/{chk['total']} ({chk['pending']} pending)"
+                    elif chk["total"] == 0:
+                        summary = "no checks"
+                    else:
+                        summary = f"{chk['ok']}/{chk['total']} ✓"
+                    auto_m = chk["auto_merge"]
+                except GHE:
+                    state_str = "pending"
+                    summary = "?"
+                    auto_m = False
+                gui_prs.append(GuiPR(
+                    number=pr["number"],
+                    title=pr["title"],
+                    head=head,
+                    base=pr["base"]["ref"],
+                    url=pr["html_url"],
+                    slug=slug,
+                    check_state=state_str,
+                    check_summary=summary,
+                    auto_merge=auto_m,
+                ))
+        except Exception:
+            gui_prs = []
+
     from datetime import datetime, timezone
     return PipelineState(
         pending=pending,
@@ -216,5 +274,6 @@ def build_state(settings: Settings) -> PipelineState:
         builds=builds,
         infra_diff_dev_preprod=infra_dev_preprod,
         infra_diff_preprod_main=infra_preprod_main,
+        gui_prs=gui_prs,
         last_refreshed_iso=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

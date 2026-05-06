@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -74,17 +74,44 @@ def healthz():
     return {"ok": True}
 
 
+def _board_context(pipeline) -> dict:
+    """Construye el contexto para board.html (también usado por audit_log inclusion)."""
+    pr_for_slug = {}
+    for pr in pipeline.gui_prs:
+        if pr.slug:
+            pr_for_slug[pr.slug] = pr
+    events = audit.read_recent(_audit_path(), limit=15)
+    return {
+        "p": pipeline,
+        "settings": app.state.settings,
+        "events": events,
+        "gui_prs": pipeline.gui_prs,
+        "pr_for_slug": pr_for_slug,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     pipeline = getattr(app.state, "pipeline", None)
     if pipeline is None:
         pipeline = state.build_state(app.state.settings)
         app.state.pipeline = pipeline
-    events = audit.read_recent(_audit_path(), limit=15)
     return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {"p": pipeline, "settings": app.state.settings, "events": events},
+        request, "dashboard.html", _board_context(pipeline),
+    )
+
+
+@app.get("/board", response_class=HTMLResponse)
+async def board_partial(request: Request):
+    """Partial: solo el contenido dinámico (sin layout/scripts).
+
+    Usado por el botón refresh y el auto-refresh tras acciones (HX-Trigger).
+    Forza un refresh de pipeline state primero para que llegue al instante.
+    """
+    pipeline = await asyncio.to_thread(state.build_state, app.state.settings)
+    app.state.pipeline = pipeline
+    return templates.TemplateResponse(
+        request, "partials/board.html", _board_context(pipeline),
     )
 
 
@@ -138,11 +165,20 @@ def _user_from_request(request: Request) -> str:
 
 
 def _action_response(request: Request, kind: str, message: str, pr_url: str | None = None):
-    return templates.TemplateResponse(
+    """Devuelve banner de resultado. Si la acción tuvo éxito, dispara
+    `board-refresh` event en el cliente vía HX-Trigger header — que el JS
+    escucha para hacer un refresh diferido del board partial.
+    """
+    headers = {}
+    if kind == "success":
+        headers["HX-Trigger"] = "board-refresh"
+    response = templates.TemplateResponse(
         request,
         "partials/action_result.html",
         {"kind": kind, "message": message, "pr_url": pr_url},
+        headers=headers,
     )
+    return response
 
 
 @app.post("/api/deploy/{slug}/dev", response_class=HTMLResponse)
