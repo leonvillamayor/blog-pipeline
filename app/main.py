@@ -23,8 +23,11 @@ async def lifespan(app: FastAPI):
     settings = load_settings()
     app.state.settings = settings
 
-    # Asegurar clone del repo blog
-    repo_url = f"https://x-access-token:{settings.github_token}@github.com/{settings.blog_repo}.git"
+    # Configurar credential helper antes del clone (evita PAT en argv)
+    gitops.configure_credential_store(settings.github_token)
+
+    # Asegurar clone del repo blog (URL HTTPS limpia; auth via credential.helper)
+    repo_url = f"https://github.com/{settings.blog_repo}.git"
     try:
         gitops.ensure_clone(settings.blog_repo_path, repo_url)
         gitops.fetch_all(settings.blog_repo_path)

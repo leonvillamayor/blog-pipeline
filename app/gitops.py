@@ -4,10 +4,15 @@ Read-only en Fase 1: solo `git fetch` + lectura de árbol y commits. Las
 operaciones de escritura (push, branch, merge) viven en `github_client.py`
 y se ejecutan a través de la API de GitHub, no localmente, para que el
 PAT controle scopes y deje audit log nativo.
+
+Auth: usa git credential.helper=store con un fichero
+~/.git-credentials (mode 600). Esto evita que el PAT aparezca en la
+command-line de git (visible en `ps`).
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -29,8 +34,34 @@ def _run(args: list[str], cwd: Path, check: bool = True) -> str:
     return res.stdout
 
 
+def configure_credential_store(token: str, home: Path | None = None) -> None:
+    """Escribe ~/.git-credentials con el PAT (mode 600) y configura el helper.
+
+    Necesario antes del primer clone/fetch para que el PAT no aparezca en
+    argv. Idempotente: sobreescribe el fichero cada vez (rotaciones de PAT).
+    """
+    h = home or Path(os.environ.get("HOME", "/tmp"))
+    cred_file = h / ".git-credentials"
+    cred_file.write_text(f"https://x-access-token:{token}@github.com\n")
+    cred_file.chmod(0o600)
+    # Config global: helper=store. Idempotente.
+    subprocess.run(
+        ["git", "config", "--global", "credential.helper", "store"],
+        check=True, capture_output=True,
+    )
+    # No follow http.extraheader si lo hubiera (evita doble-auth quirks).
+    subprocess.run(
+        ["git", "config", "--global", "--unset-all", "http.extraheader"],
+        capture_output=True,
+    )
+
+
 def ensure_clone(repo_path: Path, repo_url: str) -> None:
-    """Clona el repo si no existe; si existe, no toca."""
+    """Clona el repo si no existe; si existe, no toca.
+
+    repo_url debe ser la URL HTTPS limpia (sin token). El PAT se inyecta
+    via credential.helper, configurado por configure_credential_store().
+    """
     if (repo_path / ".git").exists():
         return
     repo_path.parent.mkdir(parents=True, exist_ok=True)
