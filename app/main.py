@@ -77,12 +77,13 @@ def healthz():
 async def dashboard(request: Request):
     pipeline = getattr(app.state, "pipeline", None)
     if pipeline is None:
-        # primer render antes del primer refresh: build sincrono
         pipeline = state.build_state(app.state.settings)
         app.state.pipeline = pipeline
+    # Starlette 0.40+: signature TemplateResponse(request, name, context)
     return templates.TemplateResponse(
+        request,
         "dashboard.html",
-        {"request": request, "p": pipeline, "settings": app.state.settings},
+        {"p": pipeline, "settings": app.state.settings},
     )
 
 
