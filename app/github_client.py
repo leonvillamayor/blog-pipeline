@@ -109,9 +109,8 @@ class GitHubClient:
     ) -> dict:
         """PUT /contents/<path>. Crea o actualiza un fichero en `branch`.
 
-        El commit resultante queda firmado por la web-flow GPG key de GitHub.
-        Si el fichero ya existe en `branch` con un sha distinto, hay que pasar
-        el sha actual; si pasamos None y existe, GitHub responde 422.
+        ⚠️ NO firma commits auto. Usar create_commit_on_branch() para
+        commits firmados (requerido por branch protection).
         """
         body = {"message": message, "content": content_b64, "branch": branch}
         if sha is not None:
@@ -119,12 +118,71 @@ class GitHubClient:
         return self._req("PUT", f"/repos/{self.repo}/contents/{path}", body)  # type: ignore[return-value]
 
     def delete_contents(self, path: str, branch: str, sha: str, message: str) -> dict:
-        """DELETE /contents/<path>. Borra un fichero en `branch`."""
+        """DELETE /contents/<path>. Borra un fichero en `branch`.
+
+        ⚠️ NO firma commits auto. Usar create_commit_on_branch() para
+        commits firmados.
+        """
         return self._req(
             "DELETE",
             f"/repos/{self.repo}/contents/{path}",
             {"message": message, "branch": branch, "sha": sha},
         )  # type: ignore[return-value]
+
+    def create_commit_on_branch(
+        self,
+        branch: str,
+        message_headline: str,
+        additions: list[dict] | None = None,
+        deletions: list[dict] | None = None,
+        message_body: str | None = None,
+        expected_head_oid: str | None = None,
+    ) -> dict:
+        """GraphQL createCommitOnBranch — multi-file commit FIRMADO.
+
+        A diferencia del REST Contents API, esta mutation hace que GitHub
+        firme el commit con su web-flow GPG key (verified=true en el
+        commit, satisface required_signatures).
+
+        - additions: [{"path": "...", "contents": "<base64>"}]
+        - deletions: [{"path": "..."}]
+        - expected_head_oid: si se da, falla si HEAD ha cambiado (concurrencia)
+
+        Devuelve {commit: {oid, url}}.
+        """
+        if not expected_head_oid:
+            expected_head_oid = self.get_branch_sha(branch)
+
+        owner, name = self.repo.split("/", 1)
+        file_changes: dict = {}
+        if additions:
+            file_changes["additions"] = additions
+        if deletions:
+            file_changes["deletions"] = deletions
+
+        msg_obj: dict = {"headline": message_headline}
+        if message_body:
+            msg_obj["body"] = message_body
+
+        query = """
+        mutation CreateCommit($input: CreateCommitOnBranchInput!) {
+          createCommitOnBranch(input: $input) {
+            commit { oid, url }
+          }
+        }
+        """
+        variables = {
+            "input": {
+                "branch": {
+                    "repositoryNameWithOwner": self.repo,
+                    "branchName": branch,
+                },
+                "message": msg_obj,
+                "fileChanges": file_changes,
+                "expectedHeadOid": expected_head_oid,
+            }
+        }
+        return self._gql(query, variables)["createCommitOnBranch"]["commit"]
 
     # === Pull Requests ===
 

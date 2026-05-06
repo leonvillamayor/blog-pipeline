@@ -1,9 +1,13 @@
 """Operaciones de promoción y borrado artículo-level.
 
-Usa GitHub Contents API para todas las escrituras: cada PUT/DELETE
-produce un commit firmado por la web-flow GPG key de GitHub, lo que
-satisface el requisito de branch protection 'Commits must have
-verified signatures'.
+Usa GraphQL `createCommitOnBranch` para todas las escrituras: cada
+mutation produce UN commit con MÚLTIPLES ficheros firmado por la
+web-flow GPG key de GitHub, lo que satisface el requisito de branch
+protection 'Commits must have verified signatures'.
+
+Históricamente se intentó con REST Contents API (PUT /contents) pero
+NO firma commits — los deja unsigned. Documentado en commit
+'fix(security): refactorizar a GraphQL createCommitOnBranch'.
 
 Convención de paths que componen un artículo:
 - content/posts/<slug>/   (todo el árbol — index.md, .en.md, images/)
@@ -53,14 +57,15 @@ def promote_article(
     from_branch: str,
     to_branch: str,
 ) -> PromoteResult:
-    """Promociona un artículo de `from_branch` a `to_branch`.
+    """Promociona un artículo de `from_branch` a `to_branch` via PR.
 
     Pasos:
     1. Listar ficheros del slug en `from_branch`.
     2. Crear branch worker `auto/promote-<slug>-to-<to_branch>-<ts>` desde `to_branch`.
-    3. Por cada fichero del artículo, PUT /contents en el worker (commits firmados).
-    4. Crear PR worker → to_branch.
-    5. Habilitar auto-merge (merge_method=MERGE).
+    3. Leer contenidos de los ficheros en `from_branch` (base64).
+    4. UN solo commit firmado en el worker via createCommitOnBranch GraphQL,
+       con todos los ficheros como additions.
+    5. Crear PR worker → to_branch + auto-merge.
     """
     files = _list_article_files(gh, slug, from_branch)
     if not files:
@@ -71,46 +76,51 @@ def promote_article(
     base_sha = gh.get_branch_sha(to_branch)
     gh.create_branch(work, from_sha=base_sha)
 
-    # Para cada fichero: leer blob de from_branch, escribir en worker.
-    files_committed = 0
+    # Reunir contenidos de los ficheros desde from_branch
+    additions = []
     for f in files:
-        path = f["path"]
-        # Leer contenido de from_branch
-        src = gh.get_contents(path, ref=from_branch)
-        if src is None:
+        src = gh.get_contents(f["path"], ref=from_branch)
+        if src is None or "content" not in src:
             continue
-        content_b64 = src["content"]  # ya base64 desde GitHub
-        # Si el fichero ya existe en to_branch con sha distinto, lo pasamos
-        # para update; si no existe, sha=None.
-        existing = gh.get_contents(path, ref=work)
-        sha_for_update = existing["sha"] if existing else None
-        gh.put_contents(
-            path=path,
-            branch=work,
-            content_b64=content_b64,
-            message=f"promote({slug}): {path}",
-            sha=sha_for_update,
-        )
-        files_committed += 1
+        # GitHub devuelve el content en base64 con saltos de línea.
+        # createCommitOnBranch acepta el base64 como string sin filtrar.
+        content_clean = src["content"].replace("\n", "").replace("\r", "")
+        additions.append({"path": f["path"], "contents": content_clean})
 
-    if files_committed == 0:
+    if not additions:
         gh.delete_branch(work)
-        raise RuntimeError(f"No se commiteó ningún fichero para slug='{slug}'")
+        raise RuntimeError(f"No se pudo leer contenido de ningún fichero para slug='{slug}'")
+
+    # UN commit firmado con todos los ficheros
+    headline = f"promote({slug}): {from_branch} → {to_branch}"
+    msg_body = (
+        f"Promoción artículo-level de `{slug}`.\n\n"
+        f"- Origen: `{from_branch}`\n"
+        f"- Destino: `{to_branch}`\n"
+        f"- Ficheros: {len(additions)}\n\n"
+        "Generado por blog-pipeline GUI."
+    )
+    gh.create_commit_on_branch(
+        branch=work,
+        message_headline=headline,
+        message_body=msg_body,
+        additions=additions,
+    )
 
     # Crear PR
-    title = f"🚀 promote({slug}): {from_branch} → {to_branch}"
+    title = f"🚀 {headline}"
     body = (
         f"Promoción artículo-level del slug `{slug}`.\n\n"
         f"- Origen: `{from_branch}`\n"
         f"- Destino: `{to_branch}`\n"
-        f"- Ficheros: {files_committed}\n"
+        f"- Ficheros: {len(additions)}\n"
         f"- Worker branch: `{work}`\n\n"
-        "Generado automáticamente por blog-pipeline GUI. Se mergea con "
-        "`MERGE` (no squash, per memory `feedback_promotion_merge`)."
+        "Generado por blog-pipeline GUI. Commit firmado vía GraphQL "
+        "`createCommitOnBranch` (web-flow GPG key). Merge=MERGE per "
+        "memory `feedback_promotion_merge`."
     )
     pr = gh.create_pr(head=work, base=to_branch, title=title, body=body)
 
-    # Auto-merge
     auto_ok = True
     try:
         gh.enable_auto_merge(pr["node_id"], merge_method="MERGE")
@@ -121,7 +131,7 @@ def promote_article(
         pr_number=pr["number"],
         pr_url=pr["html_url"],
         work_branch=work,
-        files_committed=files_committed,
+        files_committed=len(additions),
         auto_merge_enabled=auto_ok,
     )
 
@@ -131,15 +141,7 @@ def delete_article(
     slug: str,
     from_branch: str,
 ) -> PromoteResult:
-    """Borra el artículo de `from_branch` vía PR.
-
-    Pasos:
-    1. Listar ficheros del slug en `from_branch`.
-    2. Crear branch worker `auto/delete-<slug>-from-<from_branch>-<ts>`.
-    3. Por cada fichero, DELETE /contents (commits firmados).
-    4. Crear PR worker → from_branch.
-    5. Habilitar auto-merge.
-    """
+    """Borra el artículo de `from_branch` via PR (UN commit firmado)."""
     files = _list_article_files(gh, slug, from_branch)
     if not files:
         raise ValueError(f"No hay ficheros para slug='{slug}' en branch '{from_branch}'")
@@ -149,28 +151,28 @@ def delete_article(
     base_sha = gh.get_branch_sha(from_branch)
     gh.create_branch(work, from_sha=base_sha)
 
-    files_deleted = 0
-    for f in files:
-        # En el worker (recién creado a partir de from_branch) los ficheros
-        # tienen el mismo SHA que en from_branch.
-        gh.delete_contents(
-            path=f["path"],
-            branch=work,
-            sha=f["sha"],
-            message=f"delete({slug}): {f['path']}",
-        )
-        files_deleted += 1
+    deletions = [{"path": f["path"]} for f in files]
 
-    if files_deleted == 0:
-        gh.delete_branch(work)
-        raise RuntimeError(f"No se borró ningún fichero para slug='{slug}'")
+    headline = f"delete({slug}) from {from_branch}"
+    msg_body = (
+        f"Borrado artículo-level de `{slug}` de `{from_branch}`.\n\n"
+        f"- Ficheros borrados: {len(deletions)}\n\n"
+        "Generado por blog-pipeline GUI."
+    )
+    gh.create_commit_on_branch(
+        branch=work,
+        message_headline=headline,
+        message_body=msg_body,
+        deletions=deletions,
+    )
 
-    title = f"🗑️ delete({slug}) from {from_branch}"
+    title = f"🗑️ {headline}"
     body = (
-        f"Borrado artículo-level del slug `{slug}` de `{from_branch}`.\n\n"
-        f"- Ficheros borrados: {files_deleted}\n"
+        f"Borrado artículo-level del slug `{slug}`.\n\n"
+        f"- Branch afectada: `{from_branch}`\n"
+        f"- Ficheros borrados: {len(deletions)}\n"
         f"- Worker branch: `{work}`\n\n"
-        "Generado automáticamente por blog-pipeline GUI."
+        "Generado por blog-pipeline GUI. Commit firmado vía GraphQL."
     )
     pr = gh.create_pr(head=work, base=from_branch, title=title, body=body)
 
@@ -184,7 +186,7 @@ def delete_article(
         pr_number=pr["number"],
         pr_url=pr["html_url"],
         work_branch=work,
-        files_committed=files_deleted,
+        files_committed=len(deletions),
         auto_merge_enabled=auto_ok,
     )
 
