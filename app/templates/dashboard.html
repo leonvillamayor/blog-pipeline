@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>blog-pipeline · {{ settings.blog_repo }}</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"
+    integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+"
+    crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <h1>blog-pipeline</h1>
+    <div class="meta">
+      <span>{{ settings.blog_repo }}</span>
+      <span class="dot">·</span>
+      <span>actualizado {{ p.last_refreshed_iso }}</span>
+      <span class="dot">·</span>
+      <button hx-get="/" hx-target="body" hx-swap="outerHTML">refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="board">
+      {% set columns = [
+        ("Pending dev", "pending", p.pending, "feature branches drafts/*"),
+        ("In dev", "dev", p.in_dev, "origin/dev (drafts y publicados)"),
+        ("In preprod", "preprod", p.in_preprod, "origin/preprod"),
+        ("In prod", "prod", p.in_prod, "origin/main"),
+      ] %}
+      {% for name, css, items, sub in columns %}
+        <div class="col col-{{ css }}">
+          <header>
+            <h2>{{ name }}</h2>
+            <small>{{ sub }} — {{ items|length }} ítem(s)</small>
+          </header>
+          {% if items %}
+            <ul>
+              {% for art in items %}
+                <li class="article {% if art.is_draft %}is-draft{% endif %}">
+                  <div class="slug">{{ art.slug }}</div>
+                  <div class="title">{{ art.title }}</div>
+                  <div class="badges">
+                    {% if art.is_draft %}<span class="badge draft">draft</span>{% endif %}
+                    {% if art.pending_branch %}<span class="badge branch">{{ art.pending_branch }}</span>{% endif %}
+                  </div>
+                  <div class="actions">
+                    <!-- Fase 2: aquí van los botones (deploy a siguiente nivel, delete) -->
+                    <span class="placeholder">acciones (Fase 2)</span>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="empty">vacío</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </section>
+  </main>
+
+  <footer>
+    <small>blog-pipeline v0.1.0 · refresh cada {{ settings.refresh_interval_seconds }}s</small>
+  </footer>
+</body>
+</html>

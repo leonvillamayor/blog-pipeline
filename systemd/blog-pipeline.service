@@ -1,0 +1,37 @@
+[Unit]
+Description=blog-pipeline — GUI de promoción artículo-a-artículo
+Documentation=https://github.com/leonvillamayor/blog-pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=blog-pipeline
+Group=blog-pipeline
+WorkingDirectory=/opt/blog-pipeline
+EnvironmentFile=/etc/blog-pipeline/env
+ExecStart=/opt/blog-pipeline/.venv/bin/uvicorn app.main:app \
+  --host ${HOST} \
+  --port ${PORT} \
+  --log-level ${LOG_LEVEL} \
+  --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/blog-pipeline/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

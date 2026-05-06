@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Secretos locales
+.env
+.env.*
+!.env.example
+
+# Working tree del clon del blog (lo gestiona la app, no se versiona)
+/data/repo/
+
+# Logs locales
+*.log
+
+# IDE
+.vscode/
+.idea/

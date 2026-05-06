@@ -1,0 +1,14 @@
+# /etc/cloudflared/config.yml — config del tunnel para blog-pipeline.
+# El token y el tunnel ID se generan al crear el tunnel.
+# El daemon corre como systemd: cloudflared.service.
+
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # Solo expone la GUI en pipeline.leonvillamayor.blog
+  - hostname: pipeline.leonvillamayor.blog
+    service: http://localhost:8000
+
+  # Cualquier otro hostname → 404 explícito (no proxy abierto)
+  - service: http_status:404
