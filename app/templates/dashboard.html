@@ -29,6 +29,8 @@
         ("In preprod", "preprod", p.in_preprod, "origin/preprod"),
         ("In prod", "prod", p.in_prod, "origin/main"),
       ] %}
+      {% set level_map = {"pending": None, "dev": "preprod", "preprod": "prod", "prod": None} %}
+      {% set level_branch = {"pending": "drafts", "dev": "dev", "preprod": "preprod", "prod": "main"} %}
       {% for name, css, items, sub in columns %}
         <div class="col col-{{ css }}">
           <header>
@@ -38,7 +40,7 @@
           {% if items %}
             <ul>
               {% for art in items %}
-                <li class="article {% if art.is_draft %}is-draft{% endif %}">
+                <li class="article {% if art.is_draft %}is-draft{% endif %}" id="art-{{ css }}-{{ art.slug }}">
                   <div class="slug">{{ art.slug }}</div>
                   <div class="title">{{ art.title }}</div>
                   <div class="badges">
@@ -46,9 +48,45 @@
                     {% if art.pending_branch %}<span class="badge branch">{{ art.pending_branch }}</span>{% endif %}
                   </div>
                   <div class="actions">
-                    <!-- Fase 2: aquí van los botones (deploy a siguiente nivel, delete) -->
-                    <span class="placeholder">acciones (Fase 2)</span>
+                    {# Botón DEPLOY: distinto endpoint según columna #}
+                    {% if css == "pending" %}
+                      <button class="btn btn-deploy"
+                              hx-post="/api/deploy/{{ art.slug }}/dev"
+                              hx-target="#result-{{ css }}-{{ art.slug }}"
+                              hx-swap="innerHTML"
+                              hx-confirm="Desplegar '{{ art.slug }}' a dev?">
+                        ▶ Deploy → dev
+                      </button>
+                    {% elif css == "dev" %}
+                      <button class="btn btn-deploy"
+                              hx-post="/api/deploy/{{ art.slug }}/preprod"
+                              hx-target="#result-{{ css }}-{{ art.slug }}"
+                              hx-swap="innerHTML"
+                              hx-confirm="Promover '{{ art.slug }}' a preprod?">
+                        ▶ Deploy → preprod
+                      </button>
+                    {% elif css == "preprod" %}
+                      <button class="btn btn-deploy"
+                              hx-post="/api/deploy/{{ art.slug }}/prod"
+                              hx-target="#result-{{ css }}-{{ art.slug }}"
+                              hx-swap="innerHTML"
+                              hx-confirm="Promover '{{ art.slug }}' a producción?">
+                        ▶ Deploy → prod
+                      </button>
+                    {% endif %}
+
+                    {# Botón DELETE: en todas las columnas #}
+                    {% set lvl = level_branch[css] if css != "pending" else "pending" %}
+                    {% set lvl_path = "main" if css == "prod" else (lvl if css != "pending" else "pending") %}
+                    <button class="btn btn-delete"
+                            hx-post="/api/delete/{{ art.slug }}/{{ lvl_path }}"
+                            hx-target="#result-{{ css }}-{{ art.slug }}"
+                            hx-swap="innerHTML"
+                            hx-confirm="¿Borrar '{{ art.slug }}' de {{ name }}? Esta acción crea un PR de borrado.">
+                      ✗ Delete
+                    </button>
                   </div>
+                  <div class="result" id="result-{{ css }}-{{ art.slug }}"></div>
                 </li>
               {% endfor %}
             </ul>

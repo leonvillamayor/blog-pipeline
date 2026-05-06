@@ -1,0 +1,10 @@
+{# Render del resultado de una acción (deploy/delete) tras click HTMX. #}
+<div class="action-result {{ kind }}">
+  <span class="icon">
+    {% if kind == "success" %}✓{% elif kind == "error" %}✗{% else %}…{% endif %}
+  </span>
+  <span class="msg">{{ message }}</span>
+  {% if pr_url %}
+    <a href="{{ pr_url }}" target="_blank" rel="noopener noreferrer" class="pr-link">ver PR ↗</a>
+  {% endif %}
+</div>

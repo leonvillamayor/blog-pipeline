@@ -7,13 +7,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import gitops, state
+from . import gitops, promote, state
 from .config import load_settings
+from .github_client import GitHubClient, GitHubError
 
 logger = logging.getLogger("blog-pipeline")
 
@@ -112,3 +113,125 @@ async def api_state():
         "in_preprod": _ser(pipeline.in_preprod),
         "in_prod": _ser(pipeline.in_prod),
     }
+
+
+# ============================================================
+# Fase 2 — Endpoints de acción (POST)
+# ============================================================
+#
+# Cada endpoint devuelve un fragmento HTML para HTMX swap. Los errores
+# se renderizan como banner de error en línea, no como JSON 500.
+
+def _gh_client() -> GitHubClient:
+    s = app.state.settings
+    return GitHubClient(token=s.github_token, repo=s.blog_repo)
+
+
+def _action_response(request: Request, kind: str, message: str, pr_url: str | None = None):
+    return templates.TemplateResponse(
+        request,
+        "partials/action_result.html",
+        {"kind": kind, "message": message, "pr_url": pr_url},
+    )
+
+
+@app.post("/api/deploy/{slug}/dev", response_class=HTMLResponse)
+async def deploy_to_dev(request: Request, slug: str):
+    """Mergea drafts/<slug> → dev (vía PR + auto-merge)."""
+    pipeline = getattr(app.state, "pipeline", None)
+    if pipeline is None:
+        raise HTTPException(503, "Pipeline state no inicializado todavía")
+
+    art = next((a for a in pipeline.pending if a.slug == slug), None)
+    if not art or not art.pending_branch:
+        return _action_response(request, "error", f"Slug '{slug}' no en pending o sin branch.")
+
+    try:
+        gh = _gh_client()
+        result = await asyncio.to_thread(
+            promote.deploy_pending_to_dev, gh, slug, art.pending_branch,
+        )
+    except (GitHubError, ValueError, RuntimeError) as exc:
+        logger.error("deploy_to_dev falló: %s", exc)
+        return _action_response(request, "error", str(exc))
+
+    return _action_response(
+        request, "success",
+        f"PR #{result.pr_number} creado. Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
+        pr_url=result.pr_url,
+    )
+
+
+@app.post("/api/deploy/{slug}/preprod", response_class=HTMLResponse)
+async def deploy_to_preprod(request: Request, slug: str):
+    """Promociona artículo de dev a preprod."""
+    try:
+        gh = _gh_client()
+        result = await asyncio.to_thread(
+            promote.promote_article, gh, slug, "dev", "preprod",
+        )
+    except (GitHubError, ValueError, RuntimeError) as exc:
+        logger.error("deploy_to_preprod falló: %s", exc)
+        return _action_response(request, "error", str(exc))
+    return _action_response(
+        request, "success",
+        f"PR #{result.pr_number} creado ({result.files_committed} ficheros). "
+        f"Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
+        pr_url=result.pr_url,
+    )
+
+
+@app.post("/api/deploy/{slug}/prod", response_class=HTMLResponse)
+async def deploy_to_prod(request: Request, slug: str):
+    """Promociona artículo de preprod a main."""
+    try:
+        gh = _gh_client()
+        result = await asyncio.to_thread(
+            promote.promote_article, gh, slug, "preprod", "main",
+        )
+    except (GitHubError, ValueError, RuntimeError) as exc:
+        logger.error("deploy_to_prod falló: %s", exc)
+        return _action_response(request, "error", str(exc))
+    return _action_response(
+        request, "success",
+        f"PR #{result.pr_number} creado ({result.files_committed} ficheros). "
+        f"Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
+        pr_url=result.pr_url,
+    )
+
+
+@app.post("/api/delete/{slug}/{level}", response_class=HTMLResponse)
+async def delete_from(request: Request, slug: str, level: str):
+    """Borra el artículo de `level` (dev | preprod | main | pending)."""
+    if level == "pending":
+        pipeline = getattr(app.state, "pipeline", None)
+        if pipeline is None:
+            raise HTTPException(503, "state no inicializado")
+        art = next((a for a in pipeline.pending if a.slug == slug), None)
+        if not art or not art.pending_branch:
+            return _action_response(request, "error", f"Slug '{slug}' no en pending.")
+        try:
+            gh = _gh_client()
+            await asyncio.to_thread(gh.delete_branch, art.pending_branch)
+        except GitHubError as exc:
+            return _action_response(request, "error", f"No se pudo borrar branch: {exc}")
+        return _action_response(
+            request, "success",
+            f"Feature branch `{art.pending_branch}` borrada.",
+        )
+
+    if level not in {"dev", "preprod", "main"}:
+        raise HTTPException(400, f"Level inválido: {level}")
+
+    try:
+        gh = _gh_client()
+        result = await asyncio.to_thread(promote.delete_article, gh, slug, level)
+    except (GitHubError, ValueError, RuntimeError) as exc:
+        logger.error("delete falló: %s", exc)
+        return _action_response(request, "error", str(exc))
+    return _action_response(
+        request, "success",
+        f"PR #{result.pr_number} de borrado creado ({result.files_committed} ficheros). "
+        f"Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
+        pr_url=result.pr_url,
+    )
