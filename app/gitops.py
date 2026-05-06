@@ -35,26 +35,34 @@ def _run(args: list[str], cwd: Path, check: bool = True) -> str:
 
 
 def configure_credential_store(token: str, cred_file: Path) -> None:
-    """Escribe el fichero de credenciales (mode 600) y configura git para usarlo.
+    """Escribe credentials + gitconfig en `cred_file.parent`.
 
     Necesario antes del primer clone/fetch para que el PAT no aparezca en
-    argv. Idempotente: sobreescribe el fichero cada vez (rotaciones de PAT).
+    argv. Idempotente: sobreescribe los ficheros cada vez (rotaciones de PAT).
 
-    El path debe ser writable por el proceso. En despliegue con systemd
-    hardening (ProtectSystem=strict, HOME read-only) usar un path bajo
-    ReadWritePaths, p.ej. /opt/blog-pipeline/data/.git-credentials.
+    Estrategia: usamos GIT_CONFIG_GLOBAL apuntando a un .gitconfig dedicado,
+    en vez de tocar ~/.gitconfig (que en systemd con ProtectSystem=strict
+    está read-only). Settea os.environ["GIT_CONFIG_GLOBAL"] para que todos
+    los `git` siguientes hereden la config.
     """
-    cred_file.parent.mkdir(parents=True, exist_ok=True)
+    base = cred_file.parent
+    base.mkdir(parents=True, exist_ok=True)
+
+    # Credentials file (mode 600, contiene el PAT)
     cred_file.write_text(f"https://x-access-token:{token}@github.com\n")
     cred_file.chmod(0o600)
-    subprocess.run(
-        ["git", "config", "--global", "credential.helper", f"store --file={cred_file}"],
-        check=True, capture_output=True,
+
+    # Gitconfig dedicado que apunta al credentials file
+    gitconfig = base / ".gitconfig"
+    gitconfig.write_text(
+        "[credential]\n"
+        f"\thelper = store --file={cred_file}\n"
     )
-    subprocess.run(
-        ["git", "config", "--global", "--unset-all", "http.extraheader"],
-        capture_output=True,
-    )
+    gitconfig.chmod(0o600)
+
+    # Apunta GIT_CONFIG_GLOBAL al fichero dedicado para que todos los
+    # `git ...` siguientes lo lean. Evita tocar ~/.gitconfig.
+    os.environ["GIT_CONFIG_GLOBAL"] = str(gitconfig)
 
 
 def ensure_clone(repo_path: Path, repo_url: str) -> None:
