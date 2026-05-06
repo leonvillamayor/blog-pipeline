@@ -120,8 +120,13 @@ def list_articles_in_branch(repo_path: Path, branch: str, article_prefix: str) -
         rel = line.removeprefix(article_prefix).split("/", 1)[0]
         if not rel:
             continue
-        # Saltar singletons que no son artículos (ej. _index.md, README.md)
-        if rel.startswith("_") or rel.lower() in ("readme.md", "draft.md", "welcome.md"):
+        # Solo aceptar como artículo un componente que sea DIRECTORIO,
+        # no un fichero suelto bajo content/posts/ (README.md, draft.md,
+        # welcome.md y sus .en.md variants).
+        if "." in rel:
+            continue
+        # Tampoco _index ni convencionales con prefijo _
+        if rel.startswith("_"):
             continue
         dirs.add(rel)
     return sorted(dirs)
