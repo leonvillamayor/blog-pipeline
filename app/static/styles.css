@@ -154,3 +154,135 @@ footer {
   color: var(--muted);
   text-align: center;
 }
+
+/* Build status header en cada columna */
+.build-status {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+}
+.build-status .build-stage { color: var(--muted); }
+.build-status .build-state { font-weight: 600; }
+.build-status .build-sha { color: var(--muted); }
+.build-status.build-success .build-state { color: var(--success); }
+.build-status.build-success { border-color: var(--success); }
+.build-status.build-active .build-state,
+.build-status.build-running .build-state { color: var(--accent); }
+.build-status.build-active,
+.build-status.build-running { border-color: var(--accent); }
+.build-status.build-failure .build-state,
+.build-status.build-canceled .build-state { color: var(--danger); }
+.build-status.build-failure,
+.build-status.build-canceled { border-color: var(--danger); }
+.build-status.build-idle .build-state,
+.build-status.build-queued .build-state { color: var(--warning); }
+
+/* Panel infra changes */
+.infra-panel,
+.audit-panel {
+  margin-top: 2rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+}
+.infra-panel h2,
+.audit-panel h2 {
+  font-size: 1.05rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.infra-panel .hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-bottom: 1rem;
+}
+.infra-panel code,
+.audit-panel code { font-size: 0.75rem; background: rgba(255,255,255,0.06); padding: 0 0.25rem; border-radius: 0.125rem; }
+
+.infra-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+@media (min-width: 768px) {
+  .infra-grid { grid-template-columns: 1fr 1fr; }
+}
+.infra-col h3 { font-size: 0.875rem; margin-bottom: 0.5rem; color: var(--muted); }
+.infra-col ul { list-style: none; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+.infra-col .empty { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+.infra-col .more { color: var(--muted); font-size: 0.75rem; margin-top: 0.5rem; }
+
+.commit {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.25rem;
+  background: rgba(255,255,255,0.02);
+  border-left: 3px solid var(--border);
+  font-size: 0.8rem;
+}
+.commit.kind-article { border-left-color: var(--accent); }
+.commit.kind-infra { border-left-color: #a371f7; }
+.commit.kind-mixed { border-left-color: var(--warning); }
+.commit.kind-other { border-left-color: var(--muted); }
+.commit .sha { font-family: ui-monospace, monospace; color: var(--muted); font-size: 0.75rem; }
+.commit .kind-tag {
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+  background: rgba(255,255,255,0.06);
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.commit.kind-article .kind-tag { color: var(--accent); }
+.commit.kind-infra .kind-tag { color: #a371f7; }
+.commit.kind-mixed .kind-tag { color: var(--warning); }
+.commit .subject { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commit .files { color: var(--muted); font-size: 0.7rem; }
+
+/* Audit log */
+.audit-panel .btn-refresh {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.2rem 0.6rem;
+  border-radius: 0.25rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.audit-panel .btn-refresh:hover { border-color: var(--accent); }
+
+.audit-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.audit-table th,
+.audit-table td { padding: 0.4rem 0.6rem; text-align: left; border-bottom: 1px solid var(--border); }
+.audit-table th { color: var(--muted); font-weight: 600; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.audit-table tr.fail td:last-child { color: var(--danger); }
+.audit-table tr.ok td:last-child { color: var(--success); }
+.audit-table .lvl {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border-radius: 0.2rem;
+  font-size: 0.7rem;
+  font-family: ui-monospace, monospace;
+  background: rgba(255,255,255,0.06);
+}
+.audit-table .lvl-pending { color: var(--warning); }
+.audit-table .lvl-dev { color: var(--accent); }
+.audit-table .lvl-preprod { color: #a371f7; }
+.audit-table .lvl-main,
+.audit-table .lvl-prod { color: var(--success); }
+.audit-panel .empty { color: var(--muted); font-style: italic; padding: 1rem 0; text-align: center; }

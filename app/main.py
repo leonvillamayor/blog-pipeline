@@ -12,7 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import gitops, promote, state
+from . import audit, gitops, promote, state
 from .config import load_settings
 from .github_client import GitHubClient, GitHubError
 
@@ -80,11 +80,11 @@ async def dashboard(request: Request):
     if pipeline is None:
         pipeline = state.build_state(app.state.settings)
         app.state.pipeline = pipeline
-    # Starlette 0.40+: signature TemplateResponse(request, name, context)
+    events = audit.read_recent(_audit_path(), limit=15)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {"p": pipeline, "settings": app.state.settings},
+        {"p": pipeline, "settings": app.state.settings, "events": events},
     )
 
 
@@ -127,6 +127,16 @@ def _gh_client() -> GitHubClient:
     return GitHubClient(token=s.github_token, repo=s.blog_repo)
 
 
+def _audit_path() -> Path:
+    s = app.state.settings
+    return s.blog_repo_path.parent.parent / "data" / "audit.log"
+
+
+def _user_from_request(request: Request) -> str:
+    """CF Access inyecta este header tras OTP."""
+    return request.headers.get("Cf-Access-Authenticated-User-Email", "unknown")
+
+
 def _action_response(request: Request, kind: str, message: str, pr_url: str | None = None):
     return templates.TemplateResponse(
         request,
@@ -138,12 +148,15 @@ def _action_response(request: Request, kind: str, message: str, pr_url: str | No
 @app.post("/api/deploy/{slug}/dev", response_class=HTMLResponse)
 async def deploy_to_dev(request: Request, slug: str):
     """Mergea drafts/<slug> → dev (vía PR + auto-merge)."""
+    user = _user_from_request(request)
     pipeline = getattr(app.state, "pipeline", None)
     if pipeline is None:
         raise HTTPException(503, "Pipeline state no inicializado todavía")
 
     art = next((a for a in pipeline.pending if a.slug == slug), None)
     if not art or not art.pending_branch:
+        audit.log_event(_audit_path(), user=user, action="deploy", level="dev",
+                         slug=slug, ok=False, reason="not_in_pending")
         return _action_response(request, "error", f"Slug '{slug}' no en pending o sin branch.")
 
     try:
@@ -153,8 +166,12 @@ async def deploy_to_dev(request: Request, slug: str):
         )
     except (GitHubError, ValueError, RuntimeError) as exc:
         logger.error("deploy_to_dev falló: %s", exc)
+        audit.log_event(_audit_path(), user=user, action="deploy", level="dev",
+                         slug=slug, ok=False, reason=str(exc))
         return _action_response(request, "error", str(exc))
 
+    audit.log_event(_audit_path(), user=user, action="deploy", level="dev",
+                     slug=slug, ok=True, pr=result.pr_number, pr_url=result.pr_url)
     return _action_response(
         request, "success",
         f"PR #{result.pr_number} creado. Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
@@ -165,6 +182,7 @@ async def deploy_to_dev(request: Request, slug: str):
 @app.post("/api/deploy/{slug}/preprod", response_class=HTMLResponse)
 async def deploy_to_preprod(request: Request, slug: str):
     """Promociona artículo de dev a preprod."""
+    user = _user_from_request(request)
     try:
         gh = _gh_client()
         result = await asyncio.to_thread(
@@ -172,7 +190,12 @@ async def deploy_to_preprod(request: Request, slug: str):
         )
     except (GitHubError, ValueError, RuntimeError) as exc:
         logger.error("deploy_to_preprod falló: %s", exc)
+        audit.log_event(_audit_path(), user=user, action="deploy", level="preprod",
+                         slug=slug, ok=False, reason=str(exc))
         return _action_response(request, "error", str(exc))
+    audit.log_event(_audit_path(), user=user, action="deploy", level="preprod",
+                     slug=slug, ok=True, pr=result.pr_number, pr_url=result.pr_url,
+                     files=result.files_committed)
     return _action_response(
         request, "success",
         f"PR #{result.pr_number} creado ({result.files_committed} ficheros). "
@@ -184,6 +207,7 @@ async def deploy_to_preprod(request: Request, slug: str):
 @app.post("/api/deploy/{slug}/prod", response_class=HTMLResponse)
 async def deploy_to_prod(request: Request, slug: str):
     """Promociona artículo de preprod a main."""
+    user = _user_from_request(request)
     try:
         gh = _gh_client()
         result = await asyncio.to_thread(
@@ -191,7 +215,12 @@ async def deploy_to_prod(request: Request, slug: str):
         )
     except (GitHubError, ValueError, RuntimeError) as exc:
         logger.error("deploy_to_prod falló: %s", exc)
+        audit.log_event(_audit_path(), user=user, action="deploy", level="prod",
+                         slug=slug, ok=False, reason=str(exc))
         return _action_response(request, "error", str(exc))
+    audit.log_event(_audit_path(), user=user, action="deploy", level="prod",
+                     slug=slug, ok=True, pr=result.pr_number, pr_url=result.pr_url,
+                     files=result.files_committed)
     return _action_response(
         request, "success",
         f"PR #{result.pr_number} creado ({result.files_committed} ficheros). "
@@ -203,18 +232,25 @@ async def deploy_to_prod(request: Request, slug: str):
 @app.post("/api/delete/{slug}/{level}", response_class=HTMLResponse)
 async def delete_from(request: Request, slug: str, level: str):
     """Borra el artículo de `level` (dev | preprod | main | pending)."""
+    user = _user_from_request(request)
     if level == "pending":
         pipeline = getattr(app.state, "pipeline", None)
         if pipeline is None:
             raise HTTPException(503, "state no inicializado")
         art = next((a for a in pipeline.pending if a.slug == slug), None)
         if not art or not art.pending_branch:
+            audit.log_event(_audit_path(), user=user, action="delete", level="pending",
+                             slug=slug, ok=False, reason="not_in_pending")
             return _action_response(request, "error", f"Slug '{slug}' no en pending.")
         try:
             gh = _gh_client()
             await asyncio.to_thread(gh.delete_branch, art.pending_branch)
         except GitHubError as exc:
+            audit.log_event(_audit_path(), user=user, action="delete", level="pending",
+                             slug=slug, ok=False, reason=str(exc))
             return _action_response(request, "error", f"No se pudo borrar branch: {exc}")
+        audit.log_event(_audit_path(), user=user, action="delete", level="pending",
+                         slug=slug, ok=True, branch=art.pending_branch)
         return _action_response(
             request, "success",
             f"Feature branch `{art.pending_branch}` borrada.",
@@ -228,10 +264,24 @@ async def delete_from(request: Request, slug: str, level: str):
         result = await asyncio.to_thread(promote.delete_article, gh, slug, level)
     except (GitHubError, ValueError, RuntimeError) as exc:
         logger.error("delete falló: %s", exc)
+        audit.log_event(_audit_path(), user=user, action="delete", level=level,
+                         slug=slug, ok=False, reason=str(exc))
         return _action_response(request, "error", str(exc))
+    audit.log_event(_audit_path(), user=user, action="delete", level=level,
+                     slug=slug, ok=True, pr=result.pr_number, pr_url=result.pr_url,
+                     files=result.files_committed)
     return _action_response(
         request, "success",
         f"PR #{result.pr_number} de borrado creado ({result.files_committed} ficheros). "
         f"Auto-merge: {'enabled' if result.auto_merge_enabled else 'disabled'}.",
         pr_url=result.pr_url,
+    )
+
+
+@app.get("/api/audit", response_class=HTMLResponse)
+async def api_audit(request: Request):
+    """Renderiza partial con los últimos eventos del audit log."""
+    events = audit.read_recent(_audit_path(), limit=15)
+    return templates.TemplateResponse(
+        request, "partials/audit_log.html", {"events": events},
     )

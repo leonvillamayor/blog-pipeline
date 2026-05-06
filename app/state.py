@@ -1,11 +1,14 @@
-"""Modelo del estado del pipeline: qué artículo está en qué columna.
+"""Modelo del estado del pipeline: qué artículo está en qué columna,
+qué builds están en curso, qué cambios infra-level están pendientes.
 
 Lee el repo clonado (gestionado por gitops.fetch_all) y construye:
 
-   pending  : feature branches drafts/<slug>
-   dev      : artículos en origin/dev (con su flag draft)
-   preprod  : artículos en origin/preprod
-   prod     : artículos en origin/main
+   pending     : feature branches drafts/<slug>
+   dev         : artículos en origin/dev (con su flag draft)
+   preprod     : artículos en origin/preprod
+   prod        : artículos en origin/main
+   builds      : estado del último deploy de cada proyecto CF Pages
+   infra_diff  : commits no-artículo entre branches (branch-level)
 
 La GUI consume esta estructura.
 """
@@ -16,7 +19,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops
+from . import classifier, gitops
+from .cloudflare_client import CloudflareClient, DeploymentStatus, CloudflareError
 from .config import Settings
 
 _DRAFT_RE = re.compile(r"^draft:\s*(true|false)\s*$", re.MULTILINE)
@@ -33,11 +37,22 @@ class Article:
 
 
 @dataclass
+class InfraDiff:
+    """Commits no-artículo (infra) entre dos branches: tipo + slugs/paths involucrados."""
+    from_branch: str
+    to_branch: str
+    commits: list[dict] = field(default_factory=list)  # cada uno con kind, sha, msg, files
+
+
+@dataclass
 class PipelineState:
     pending: list[Article] = field(default_factory=list)
     in_dev: list[Article] = field(default_factory=list)
     in_preprod: list[Article] = field(default_factory=list)
     in_prod: list[Article] = field(default_factory=list)
+    builds: dict[str, DeploymentStatus | None] = field(default_factory=dict)  # project → status
+    infra_diff_dev_preprod: InfraDiff | None = None
+    infra_diff_preprod_main: InfraDiff | None = None
     last_refreshed_iso: str = ""
 
 
@@ -134,11 +149,72 @@ def build_state(settings: Settings) -> PipelineState:
     in_dev_only = [a for a in in_dev if a.slug not in preprod_slugs]
     in_preprod_only = [a for a in in_preprod if a.slug not in prod_slugs]
 
+    # Builds CF Pages — read-only, opcional
+    builds: dict[str, DeploymentStatus | None] = {}
+    if settings.cloudflare_token and settings.cloudflare_account_id:
+        cf = CloudflareClient(
+            token=settings.cloudflare_token,
+            account_id=settings.cloudflare_account_id,
+        )
+        for proj in ("blog-dev", "blog-preprod", "blog-prod"):
+            try:
+                builds[proj] = cf.latest_deployment(proj)
+            except CloudflareError:
+                builds[proj] = None
+
+    # Infra diff entre branches: commits no-artículo pendientes de promoción
+    def _infra_commits(from_b: str, to_b: str) -> list[dict]:
+        """Commits en from_b sin estar en to_b, clasificando por path."""
+        try:
+            out = gitops._run(
+                ["log", f"origin/{to_b}..origin/{from_b}",
+                 "--format=%H%x09%an%x09%aI%x09%s", "--name-only", "--max-count=30"],
+                cwd=repo,
+                check=False,
+            )
+        except gitops.GitError:
+            return []
+        commits: list[dict] = []
+        cur: dict | None = None
+        for line in out.splitlines():
+            if "\t" in line and len(line.split("\t")) == 4:
+                if cur is not None:
+                    commits.append(cur)
+                sha, author, iso, subject = line.split("\t", 3)
+                cur = {"sha": sha[:8], "author": author, "iso": iso, "subject": subject, "files": [], "kind": "other"}
+            elif line.strip() and cur is not None:
+                cur["files"].append(line.strip())
+        if cur is not None:
+            commits.append(cur)
+        # Clasificar
+        for c in commits:
+            kind, _ = classifier.classify_paths(
+                c["files"],
+                article_prefix=settings.article_path_prefix,
+                infra_prefixes=settings.infra_paths,
+            )
+            c["kind"] = kind
+        return commits
+
+    infra_dev_preprod = InfraDiff(
+        from_branch="dev",
+        to_branch="preprod",
+        commits=_infra_commits("dev", "preprod"),
+    )
+    infra_preprod_main = InfraDiff(
+        from_branch="preprod",
+        to_branch="main",
+        commits=_infra_commits("preprod", "main"),
+    )
+
     from datetime import datetime, timezone
     return PipelineState(
         pending=pending,
         in_dev=in_dev_only,
         in_preprod=in_preprod_only,
         in_prod=in_prod,
+        builds=builds,
+        infra_diff_dev_preprod=infra_dev_preprod,
+        infra_diff_preprod_main=infra_preprod_main,
         last_refreshed_iso=datetime.now(timezone.utc).isoformat(timespec="seconds"),
     )

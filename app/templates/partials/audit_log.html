@@ -1,0 +1,40 @@
+{# Tabla compacta de eventos audit log. #}
+{% if events %}
+  <table class="audit-table">
+    <thead>
+      <tr>
+        <th>cuándo</th>
+        <th>quién</th>
+        <th>acción</th>
+        <th>nivel</th>
+        <th>slug</th>
+        <th>resultado</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in events %}
+        <tr class="{% if e.ok %}ok{% else %}fail{% endif %}">
+          <td><code>{{ e.ts[:19] }}</code></td>
+          <td>{{ e.user|default('?') }}</td>
+          <td>{{ e.action|default('?') }}</td>
+          <td><span class="lvl lvl-{{ e.level|default('?') }}">{{ e.level|default('?') }}</span></td>
+          <td><code>{{ e.slug|default('?') }}</code></td>
+          <td>
+            {% if e.ok %}
+              ✓
+              {% if e.pr %}
+                <a href="{{ e.pr_url }}" target="_blank" rel="noopener">PR #{{ e.pr }}</a>
+              {% elif e.branch %}
+                <code>{{ e.branch }}</code>
+              {% endif %}
+            {% else %}
+              ✗ {{ e.reason|default('error')|truncate(40) }}
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="empty">Sin eventos.</p>
+{% endif %}
