@@ -23,8 +23,11 @@ async def lifespan(app: FastAPI):
     settings = load_settings()
     app.state.settings = settings
 
-    # Configurar credential helper antes del clone (evita PAT en argv)
-    gitops.configure_credential_store(settings.github_token)
+    # Configurar credential helper antes del clone (evita PAT en argv).
+    # El fichero vive en data/ porque la home del usuario está read-only
+    # bajo systemd hardening (ProtectSystem=strict).
+    cred_file = settings.blog_repo_path.parent / ".git-credentials"
+    gitops.configure_credential_store(settings.github_token, cred_file)
 
     # Asegurar clone del repo blog (URL HTTPS limpia; auth via credential.helper)
     repo_url = f"https://github.com/{settings.blog_repo}.git"

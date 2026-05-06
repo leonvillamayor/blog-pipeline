@@ -34,22 +34,23 @@ def _run(args: list[str], cwd: Path, check: bool = True) -> str:
     return res.stdout
 
 
-def configure_credential_store(token: str, home: Path | None = None) -> None:
-    """Escribe ~/.git-credentials con el PAT (mode 600) y configura el helper.
+def configure_credential_store(token: str, cred_file: Path) -> None:
+    """Escribe el fichero de credenciales (mode 600) y configura git para usarlo.
 
     Necesario antes del primer clone/fetch para que el PAT no aparezca en
     argv. Idempotente: sobreescribe el fichero cada vez (rotaciones de PAT).
+
+    El path debe ser writable por el proceso. En despliegue con systemd
+    hardening (ProtectSystem=strict, HOME read-only) usar un path bajo
+    ReadWritePaths, p.ej. /opt/blog-pipeline/data/.git-credentials.
     """
-    h = home or Path(os.environ.get("HOME", "/tmp"))
-    cred_file = h / ".git-credentials"
+    cred_file.parent.mkdir(parents=True, exist_ok=True)
     cred_file.write_text(f"https://x-access-token:{token}@github.com\n")
     cred_file.chmod(0o600)
-    # Config global: helper=store. Idempotente.
     subprocess.run(
-        ["git", "config", "--global", "credential.helper", "store"],
+        ["git", "config", "--global", "credential.helper", f"store --file={cred_file}"],
         check=True, capture_output=True,
     )
-    # No follow http.extraheader si lo hubiera (evita doble-auth quirks).
     subprocess.run(
         ["git", "config", "--global", "--unset-all", "http.extraheader"],
         capture_output=True,
